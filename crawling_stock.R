@@ -1,28 +1,16 @@
-# "종목코드", "종목명",
-# "종가", "대비", "등락률", "시장구분", "업종명", "시가총액",
-# "EPS", "PER", "BPS", "PBR", "주당배당금", "배당수익률",
-# "STD_DT", "TIME"
 
-
+#-------------------------------------------------------------------------------
 ## 메모리 청소
-rm(list = ls())
-gc()
+# rm(list = ls())
+# gc()
 
 options("scipen" = 100)
 
-# ==============================================================================
-# package (sapply)
-# ==============================================================================
-# install.packages("timetk", lib="/usr/lib64/R/library")
-pkg = c('httr', 'rvest', 'readr', 'stringr', 'lubridate', 'readr', 'timetk')
-sapply(pkg, require, character.only = TRUE)
-rm(pkg)
+v_std_dt = format(Sys.Date() -0, '%Y%m%d')
+v_pre_dt = format(Sys.Date() -1, '%Y%m%d')
 
-if(format(Sys.time() -1, '%H%M%S') < '160000') {
-  v_std_dt = format(Sys.Date() -1, '%Y%m%d')
-} else {
-  v_std_dt = format(Sys.Date() -0, '%Y%m%d')
-}
+v_from_dt = (as.POSIXct(v_std_dt, format = '%Y%m%d') - years(0) - months(6)) %>% str_remove_all('-') # 시작일
+v_to_dt   = v_std_dt # 종료일
 
 # ## -2 영업일
 # url = 'https://finance.naver.com/sise/sise_deposit.nhn'
@@ -42,6 +30,7 @@ down_url = 'http://data.krx.co.kr/comm/fileDn/download_csv/download.cmd'
 
 # ==============================================================================
 # KOSPI kicker
+# "종목코드""종목명""시장구분""업종명""종가""대비""등락률""시가총액"
 # ==============================================================================
 gen_otp_data = list(
   mktId       = 'STK',  # STK:코스피, KSQ:코스닥
@@ -61,6 +50,7 @@ down_sector_KS = POST(down_url, query = list(code = otp),
 
 # ==============================================================================
 # KODAQ kicker
+# "종목코드""종목명""시장구분""업종명""종가""대비""등락률""시가총액"
 # ==============================================================================
 gen_otp_data = list(
   mktId       = 'KSQ',  # STK:코스피, KSQ:코스닥
@@ -78,14 +68,13 @@ down_sector_KQ = POST(down_url, query = list(code = otp),
   html_text() %>%
   read_csv()
 
-## save to RData
+## rbind
 down_sector <- rbind(down_sector_KS, down_sector_KQ)
 rm(list=c('down_sector_KS', 'down_sector_KQ'))
-# save(down_sector,
-#      file = paste0("/home/WJJang/shiny/WJJang/DvorakStock/database/sector_", v_std_dt, ".RData"))
 
 # ==============================================================================
 # 개별종목 지표
+# "종목코드""종목명""종가""대비""등락률""EPS""PER""BPS""PBR""주당배당금""배당수익률"
 # ==============================================================================
 gen_otp_data = list(
   searchType  = '1',
@@ -103,15 +92,9 @@ down_ind = POST(down_url, query = list(code = otp),
   html_text() %>%
   read_csv()
 
-# ## save to RData
-# save(down_ind,
-#      file = paste0("/home/WJJang/shiny/WJJang/DvorakStock/database/indicator_", v_std_dt, ".RData"))
-
-## remove memory
-rm(list=c('gen_otp_data', 'down_url', 'gen_otp_url', 'otp'))
-
 # ==============================================================================
 # ticker merge
+# "종목코드""종목명""종가""대비""등락률""시장구분""업종명""시가총액""EPS""PER""BPS""PBR""주당배당금""배당수익률"
 # ==============================================================================
 KOR_ticker = merge(down_sector, down_ind,
                    by = intersect(names(down_sector), names(down_ind)),
@@ -128,79 +111,85 @@ KOR_ticker$TIME <- Sys.time()
 
 ## save to RData
 save(KOR_ticker,
-     file = paste0(getwd(), "/database/KOR_ticker_", format(Sys.Date(), '%Y%m%d'), ".RData"))
+     file = paste0(getwd(), "/database/KOR_ticker.RData"))
 
 ## remove memory
-rm(list=c('down_sector', 'down_ind'))
+rm(list=c('KOR_ticker', 'down_sector', 'down_ind'))
 
 # ==============================================================================
-# 수정주가
+# 상한가
 # ==============================================================================
-from = (as.POSIXct(v_std_dt, format = '%Y%m%d') - years(0) - months(3)) %>% str_remove_all('-') # 시작일
-to = v_std_dt # 종료일
+gen_otp_data = list(
+  mktId = 'ALL',
+  flucTpCd = '4',
+  trdDd = '20210311',
+  share = '1',
+  money = '1',
+  csvxls_isNo = 'true',
+  name = 'fileDown',
+  url = 'dbms/MDC/EASY/ranking/MDCEASY01801')
 
-for(i in 1 : nrow(KOR_ticker) ) {
-  
-  price = xts(NA, order.by = Sys.Date()) # 빈 시계열 데이터 생성
-  item_cd = KOR_ticker$'종목코드'[i]     # 티커 부분 선택
-  item_nm = KOR_ticker$'종목명'[i]       # 티커 부분 선택
-  
-  print(paste0("[", i, "/", nrow(KOR_ticker), "] ", i/nrow(KOR_ticker)*100, " %"))
-  
-  # 오류 발생 시 이를 무시하고 다음 루프로 진행
-  tryCatch({
-    # url 생성
-    url = paste0('https://fchart.stock.naver.com/siseJson.nhn?symbol=', item_cd,
-                 '&requestType=1&startTime=', from, '&endTime=', to, '&timeframe=day')
-    
-    # 데이터 다운로드
-    data = GET(url)
-    data_html = data %>% read_html %>% html_text() %>% read_csv()
-    
-    # 필요한 열만 선택 후 클렌징
-    price = data_html[c(1, 5, 6)]
-    colnames(price) = (c('Date', 'Price', 'Volume'))
-    price = na.omit(price)
-    price$Date = parse_number(price$Date)
-    price$Date = ymd(price$Date)
-    price = tk_xts(price, date_var = Date)
-    
-  }, error = function(e) {
-    
-    # 오류 발생시 해당 종목명을 출력하고 다음 루프로 이동
-    warning(paste0("Error in Ticker: (", item_cd, ")", item_nm))
-  })
+otp = POST(gen_otp_url, query = gen_otp_data) %>% read_html() %>% html_text()
 
-  ## save to RData
-  save(price,
-       file = paste0(getwd(), "/DvorakStock/database/", item_cd, "_price_", to, "_", from, ".RData"))
-  
-  # 타임슬립 적용
-  Sys.sleep(2)
-}
+STK_upperLimit = POST(down_url, query = list(code = otp),
+                       add_headers(referer = gen_otp_url)) %>%
+  read_html(encoding = 'EUC-KR') %>%
+  html_text() %>%
+  read_csv()
+
+## 번호제거
+STK_upperLimit <- STK_upperLimit[, -c(1)]
+## 기준일 조립
+STK_upperLimit$STD_DT <- v_std_dt
+## 시장구분별 정렬
+STK_upperLimit <- STK_upperLimit[with(STK_upperLimit, order(desc(시장구분))), ]
+
+## save to RData
+save(STK_upperLimit,
+     file = paste0(getwd(), "/database/STK_upperLimit.RData"))
 
 ## remove memory
-rm(list=c('v_std_dt', 'data', 'data_html', 'price', 'url', 'i', 'from', 'to', 'item_cd', 'item_nm'))
+rm(list=c('STK_upperLimit'))
+
+# ==============================================================================
+# 하한가
+# ==============================================================================
+gen_otp_data = list(
+  mktId = 'ALL',
+  flucTpCd = '5',
+  trdDd = '20210311',
+  share = '1',
+  money = '1',
+  csvxls_isNo = 'true',
+  name = 'fileDown',
+  url = 'dbms/MDC/EASY/ranking/MDCEASY01801')
+
+otp = POST(gen_otp_url, query = gen_otp_data) %>% read_html() %>% html_text()
+
+STK_lowerLimit = POST(down_url, query = list(code = otp),
+                       add_headers(referer = gen_otp_url)) %>%
+  read_html(encoding = 'EUC-KR') %>%
+  html_text() %>%
+  read_csv()
+
+## 번호제거
+STK_lowerLimit <- STK_lowerLimit[, -c(1)]
+## 기준일 조립
+STK_lowerLimit$STD_DT <- v_std_dt
+## 시장구분별 정렬
+STK_lowerLimit <- STK_lowerLimit[with(STK_lowerLimit, order(desc(시장구분))), ]
+
+## save to RData
+save(STK_lowerLimit,
+     file = paste0(getwd(), "/database/STK_lowerLimit.RData"))
+
+## remove memory
+rm(list=c('STK_lowerLimit'))
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# unique(KOR_ticker[,c('시장구분')])
-# unique(KOR_ticker[order(KOR_ticker['업종명']), ][,c('업종명')])
-
+#-------------------------------------------------------------------------------
+## 메모리 청소
+# rm(list = ls())
+# gc()
 
 
